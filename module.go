@@ -109,12 +109,21 @@ func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]i
 			return nil, err
 		}
 
-		testLogs := data["test_logs"].([]map[string]interface{})
+		testLogs, ok := data["test_logs"].([]map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("invalid test log data format")
+		}
+
+		logsJSON, err := json.Marshal(testLogs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal test logs: %v", err)
+		}
+
 		s.logger.Infof("windows-logging: Successfully read %d entries from %s", len(testLogs), filePath)
 
 		return map[string]interface{}{
 			"state": "test_mode",
-			"logs":  testLogs,
+			"logs":  string(logsJSON),
 		}, nil
 	}
 
@@ -141,12 +150,16 @@ func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]i
 		},
 	}
 
+	logsJSON, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal live logs: %v", err)
+	}
+
 	s.logger.Infof("windows-logging: Returning %d live entries", len(entries))
 
-	// ✅ Fix: wrap slice in map to avoid proto marshal error
 	return map[string]interface{}{
 		"state":        "live_mode",
-		"windows_logs": entries,
+		"windows_logs": string(logsJSON),
 	}, nil
 }
 
