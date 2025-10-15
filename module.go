@@ -156,7 +156,7 @@ func (s *windowsLoggingLogging) DoCommand(ctx context.Context, cmd map[string]in
 }
 
 func (s *windowsLoggingLogging) Close(ctx context.Context) error {
-	s.logger.Infof("windows-logging: Closing sensor %s (LogType=%s, Logs=%s)", s.name.ShortString(), s.cfg.LogType, s.cfg.Logs)
+	s.logger.Infof("windows-logging: Closing sensor %s (LogType=%s, Logs=%s)", s.name, s.cfg.LogType, s.cfg.Logs)
 	s.cancelFunc()
 	return nil
 }
