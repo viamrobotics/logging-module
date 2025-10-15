@@ -35,7 +35,6 @@ type Config struct {
 	Logs       string `json:"logs"`        // "test" or path to file (e.g., example_logs/SawHandpieceLog.json)
 }
 
-// Validate ensures all parts of the config are valid.
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.LogType == "" {
 		cfg.LogType = "Application"
@@ -79,7 +78,6 @@ func NewLogging(ctx context.Context, deps resource.Dependencies, name resource.N
 		cancelFunc: cancelFunc,
 	}
 
-	// Log configuration at initialization
 	logger.Infof("windows-logging: Initialized with configuration: LogType=%s, MaxEntries=%d, Logs=%s",
 		conf.LogType, conf.MaxEntries, conf.Logs)
 
@@ -90,71 +88,90 @@ func (s *windowsLoggingLogging) Name() resource.Name {
 	return s.name
 }
 
-// Readings queries the Windows Event Log and returns recent entries.
+// Readings decides between live mode or test mode.
 func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]interface{}) (map[string]interface{}, error) {
 	s.logger.Infof("windows-logging: Readings called for %s with config LogType=%s, MaxEntries=%d, Logs=%s",
 		s.name, s.cfg.LogType, s.cfg.MaxEntries, s.cfg.Logs)
 
-	// 1. TEST MODE
+	// TEST MODE
 	if s.cfg.Logs == "test" || strings.HasSuffix(s.cfg.Logs, ".csv") || strings.HasSuffix(s.cfg.Logs, ".json") {
 		s.logger.Info("windows-logging: Entering TEST mode")
-		filePath := s.cfg.Logs
-		if s.cfg.Logs == "test" {
-			filePath = "example_logs/000009999-synth 1.csv"
-		}
-
-		data, err := parseTestLogFile(filePath)
-		if err != nil {
-			s.logger.Errorf("windows-logging: Failed to parse test log file %s: %v", filePath, err)
-			return nil, err
-		}
-
-		testLogs, ok := data["test_logs"].([]map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("invalid test log data format")
-		}
-
-		logsJSON, err := json.Marshal(testLogs)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal test logs: %v", err)
-		}
-
-		s.logger.Infof("windows-logging: Successfully read %d entries from %s", len(testLogs), filePath)
-		return map[string]interface{}{
-			"state": "test_mode",
-			"logs":  string(logsJSON),
-		}, nil
+		return readTestLogs(s.cfg.Logs, s.logger)
 	}
 
-	// 2. LIVE MODE
+	// LIVE MODE
 	s.logger.Infof("windows-logging: Entering LIVE mode for log type: %s", s.cfg.LogType)
-	el, err := eventlog.Open(s.cfg.LogType)
+	return readLiveLogs(s.cfg.LogType, s.cfg.MaxEntries, s.logger)
+}
+
+func (s *windowsLoggingLogging) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	s.logger.Infof("windows-logging: DoCommand called with: %+v", cmd)
+	return nil, fmt.Errorf("DoCommand not implemented")
+}
+
+func (s *windowsLoggingLogging) Close(ctx context.Context) error {
+	s.logger.Infof("windows-logging: Closing sensor %s (LogType=%s, Logs=%s)", s.name, s.cfg.LogType, s.cfg.Logs)
+	s.cancelFunc()
+	return nil
+}
+
+//
+// ------------------------
+// Helper Functions
+// ------------------------
+//
+
+// readTestLogs parses test data from CSV or JSON
+func readTestLogs(logPath string, logger logging.Logger) (map[string]interface{}, error) {
+	filePath := logPath
+	if logPath == "test" {
+		filePath = "example_logs/000009999-synth 1.csv"
+	}
+
+	logger.Infof("windows-logging: Loading test log file: %s", filePath)
+	data, err := parseTestLogFile(filePath)
 	if err != nil {
-		s.logger.Errorf("windows-logging: Failed to open event log '%s': %v", s.cfg.LogType, err)
+		logger.Errorf("windows-logging: Failed to parse test log file %s: %v", filePath, err)
+		return nil, err
+	}
+
+	testLogs, ok := data["test_logs"].([]map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid test log data format")
+	}
+
+	logger.Infof("windows-logging: Successfully read %d test log entries", len(testLogs))
+	return map[string]interface{}{
+		"state": "test_mode",
+		"logs":  testLogs,
+	}, nil
+}
+
+// readLiveLogs reads real Windows Event Log entries
+func readLiveLogs(logType string, maxEntries int, logger logging.Logger) (map[string]interface{}, error) {
+	el, err := eventlog.Open(logType)
+	if err != nil {
+		logger.Errorf("windows-logging: Failed to open event log '%s': %v", logType, err)
 		return map[string]interface{}{
 			"state":  "error",
 			"error":  err.Error(),
-			"source": s.cfg.LogType,
+			"source": logType,
 		}, nil
 	}
 	defer el.Close()
 
-	// Read real entries
-	var entries []map[string]interface{}
-
-	// Try to read the most recent MaxEntries
-	// eventlog.Read reads in reverse order (newest first) when using eventlog.Backwards
 	records, err := el.Read(eventlog.Backwards, 0)
 	if err != nil {
-		s.logger.Errorf("windows-logging: Failed to read events from %s: %v", s.cfg.LogType, err)
+		logger.Errorf("windows-logging: Failed to read events from %s: %v", logType, err)
 		return map[string]interface{}{
 			"state": "error",
 			"error": err.Error(),
 		}, nil
 	}
 
+	var entries []map[string]interface{}
 	for i, rec := range records {
-		if i >= s.cfg.MaxEntries {
+		if i >= maxEntries {
 			break
 		}
 		entry := map[string]interface{}{
@@ -170,37 +187,21 @@ func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]i
 	if len(entries) == 0 {
 		entries = append(entries, map[string]interface{}{
 			"TimeGenerated": time.Now().Format(time.RFC3339),
-			"SourceName":    s.cfg.LogType,
+			"SourceName":    logType,
 			"EventID":       1001,
 			"EventType":     "Information",
 			"Message":       "No recent Windows events found or insufficient permissions.",
 		})
 	}
 
-	logsJSON, err := json.Marshal(entries)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal event logs: %v", err)
-	}
-
-	s.logger.Infof("windows-logging: Returning %d real entries", len(entries))
-
+	logger.Infof("windows-logging: Returning %d live entries", len(entries))
 	return map[string]interface{}{
 		"state":        "live_mode",
-		"windows_logs": string(logsJSON),
+		"windows_logs": entries,
 	}, nil
 }
 
-func (s *windowsLoggingLogging) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	s.logger.Infof("windows-logging: DoCommand called with: %+v", cmd)
-	return nil, fmt.Errorf("DoCommand not implemented")
-}
-
-func (s *windowsLoggingLogging) Close(ctx context.Context) error {
-	s.logger.Infof("windows-logging: Closing sensor %s (LogType=%s, Logs=%s)", s.name, s.cfg.LogType, s.cfg.Logs)
-	s.cancelFunc()
-	return nil
-}
-
+// parseTestLogFile supports CSV or JSON test input
 func parseTestLogFile(filePath string) (map[string]interface{}, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
