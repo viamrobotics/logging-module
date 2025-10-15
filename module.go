@@ -1,20 +1,19 @@
 package windowslogging
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
-
-	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 var (
@@ -147,54 +146,41 @@ func readTestLogs(logPath string, logger logging.Logger) (map[string]interface{}
 	}, nil
 }
 
-// readLiveLogs reads real Windows Event Log entries
+// readLiveLogs executes a PowerShell command to retrieve recent Windows event logs.
 func readLiveLogs(logType string, maxEntries int, logger logging.Logger) (map[string]interface{}, error) {
-	el, err := eventlog.Open(logType)
+	// PowerShell script: get latest event log entries as JSON
+	psCmd := fmt.Sprintf(
+		`Get-EventLog -LogName %s -Newest %d | Select-Object TimeGenerated, Source, EventID, EntryType, Message | ConvertTo-Json`,
+		logType, maxEntries,
+	)
+
+	cmd := exec.Command("powershell", "-Command", psCmd)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
 	if err != nil {
-		logger.Errorf("windows-logging: Failed to open event log '%s': %v", logType, err)
+		logger.Errorf("windows-logging: PowerShell command failed: %v (%s)", err, stderr.String())
 		return map[string]interface{}{
 			"state":  "error",
-			"error":  err.Error(),
+			"error":  stderr.String(),
 			"source": logType,
-		}, nil
-	}
-	defer el.Close()
-
-	records, err := el.Read(eventlog.Backwards, 0)
-	if err != nil {
-		logger.Errorf("windows-logging: Failed to read events from %s: %v", logType, err)
-		return map[string]interface{}{
-			"state": "error",
-			"error": err.Error(),
 		}, nil
 	}
 
 	var entries []map[string]interface{}
-	for i, rec := range records {
-		if i >= maxEntries {
-			break
-		}
-		entry := map[string]interface{}{
-			"TimeGenerated": rec.TimeGenerated.Format(time.RFC3339),
-			"SourceName":    rec.Source,
-			"EventID":       rec.EventID,
-			"EventType":     rec.Type,
-			"Message":       strings.TrimSpace(rec.Message),
-		}
-		entries = append(entries, entry)
+	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
+		logger.Errorf("windows-logging: Failed to parse PowerShell output: %v", err)
+		return map[string]interface{}{
+			"state":  "error",
+			"error":  "Failed to parse PowerShell JSON output",
+			"source": logType,
+		}, nil
 	}
 
-	if len(entries) == 0 {
-		entries = append(entries, map[string]interface{}{
-			"TimeGenerated": time.Now().Format(time.RFC3339),
-			"SourceName":    logType,
-			"EventID":       1001,
-			"EventType":     "Information",
-			"Message":       "No recent Windows events found or insufficient permissions.",
-		})
-	}
-
-	logger.Infof("windows-logging: Returning %d live entries", len(entries))
+	logger.Infof("windows-logging: Retrieved %d log entries from PowerShell", len(entries))
 	return map[string]interface{}{
 		"state":        "live_mode",
 		"windows_logs": entries,
