@@ -1,3 +1,4 @@
+import win32evtlog
 from typing import (Any, ClassVar, Dict, Final, List, Mapping, Optional,
                     Sequence, Tuple)
 
@@ -49,6 +50,13 @@ class Logging(Sensor, EasyResource):
         """
         return [], []
 
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.server = "localhost"
+        self.log_type = "Application"
+        self.num_entries = 5  # how many events to return
+
+
     def reconfigure(
         self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
     ):
@@ -58,6 +66,18 @@ class Logging(Sensor, EasyResource):
             config (ComponentConfig): The new configuration
             dependencies (Mapping[ResourceName, ResourceBase]): Any dependencies (both required and optional)
         """
+        self.server = (
+            config.attributes.fields.get("server").string_value or "localhost"
+        )
+        self.log_type = (
+            config.attributes.fields.get("log_type").string_value or "Application"
+        )
+        self.num_entries = int(
+            config.attributes.fields.get("num_entries").number_value or 5
+        )
+        self.logger.info(
+            f"Configured Logging module for {self.server}:{self.log_type} (showing {self.num_entries} entries)"
+        )
         return super().reconfigure(config, dependencies)
 
     async def get_readings(
@@ -65,10 +85,39 @@ class Logging(Sensor, EasyResource):
         *,
         extra: Optional[Mapping[str, Any]] = None,
         timeout: Optional[float] = None,
-        **kwargs
+        **kwargs,
     ) -> Mapping[str, SensorReading]:
-        self.logger.error("`get_readings` is not implemented")
-        raise NotImplementedError()
+        """
+        Query recent Windows Event Log entries.
+        """
+        readings: Dict[str, Any] = {}
+        try:
+            handle = win32evtlog.OpenEventLog(self.server, self.log_type)
+
+            flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+            events = win32evtlog.ReadEventLog(handle, flags, 0)
+
+            logs = []
+            for i, event in enumerate(events[: self.num_entries]):
+                record = {
+                    "TimeGenerated": str(event.TimeGenerated),
+                    "SourceName": event.SourceName,
+                    "EventID": event.EventID & 0xFFFF,
+                    "EventType": event.EventType,
+                    "EventCategory": event.EventCategory,
+                    "Message": win32evtlog.FormatMessage(event)
+                    if hasattr(win32evtlog, "FormatMessage")
+                    else None,
+                }
+                logs.append(record)
+
+            win32evtlog.CloseEventLog(handle)
+            readings["windows_logs"] = logs
+        except Exception as e:
+            self.logger.error(f"Error reading Windows logs: {e}")
+            readings["windows_logs"] = [{"error": str(e)}]
+
+        return readings
 
     async def do_command(
         self,
