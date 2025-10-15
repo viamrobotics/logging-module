@@ -1,3 +1,0 @@
-viam-sdk==0.57.0
-typing-extensions
-pywin32
