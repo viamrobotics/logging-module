@@ -120,7 +120,6 @@ func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]i
 		}
 
 		s.logger.Infof("windows-logging: Successfully read %d entries from %s", len(testLogs), filePath)
-
 		return map[string]interface{}{
 			"state": "test_mode",
 			"logs":  string(logsJSON),
@@ -140,22 +139,50 @@ func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]i
 	}
 	defer el.Close()
 
-	entries := []map[string]interface{}{
-		{
+	// Read real entries
+	var entries []map[string]interface{}
+
+	// Try to read the most recent MaxEntries
+	// eventlog.Read reads in reverse order (newest first) when using eventlog.Backwards
+	records, err := el.Read(eventlog.Backwards, 0)
+	if err != nil {
+		s.logger.Errorf("windows-logging: Failed to read events from %s: %v", s.cfg.LogType, err)
+		return map[string]interface{}{
+			"state": "error",
+			"error": err.Error(),
+		}, nil
+	}
+
+	for i, rec := range records {
+		if i >= s.cfg.MaxEntries {
+			break
+		}
+		entry := map[string]interface{}{
+			"TimeGenerated": rec.TimeGenerated.Format(time.RFC3339),
+			"SourceName":    rec.Source,
+			"EventID":       rec.EventID,
+			"EventType":     rec.Type,
+			"Message":       strings.TrimSpace(rec.Message),
+		}
+		entries = append(entries, entry)
+	}
+
+	if len(entries) == 0 {
+		entries = append(entries, map[string]interface{}{
 			"TimeGenerated": time.Now().Format(time.RFC3339),
 			"SourceName":    s.cfg.LogType,
-			"EventID":       1000,
+			"EventID":       1001,
 			"EventType":     "Information",
-			"Message":       fmt.Sprintf("Windows logging sensor active for %s", s.cfg.LogType),
-		},
+			"Message":       "No recent Windows events found or insufficient permissions.",
+		})
 	}
 
 	logsJSON, err := json.Marshal(entries)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal live logs: %v", err)
+		return nil, fmt.Errorf("failed to marshal event logs: %v", err)
 	}
 
-	s.logger.Infof("windows-logging: Returning %d live entries", len(entries))
+	s.logger.Infof("windows-logging: Returning %d real entries", len(entries))
 
 	return map[string]interface{}{
 		"state":        "live_mode",
