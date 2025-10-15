@@ -170,6 +170,7 @@ func readLiveLogs(logType string, maxEntries int, logger logging.Logger) (map[st
 		}, nil
 	}
 
+	// ✅ Parse PowerShell JSON output
 	var entries []map[string]interface{}
 	if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
 		logger.Errorf("windows-logging: Failed to parse PowerShell output: %v", err)
@@ -180,10 +181,20 @@ func readLiveLogs(logType string, maxEntries int, logger logging.Logger) (map[st
 		}, nil
 	}
 
-	logger.Infof("windows-logging: Retrieved %d log entries from PowerShell", len(entries))
+	// ✅ Marshal back to string for proto-safe transport
+	logsJSON, err := json.Marshal(entries)
+	if err != nil {
+		logger.Errorf("windows-logging: Failed to marshal event logs: %v", err)
+		return map[string]interface{}{
+			"state":  "error",
+			"error":  "Failed to encode logs",
+			"source": logType,
+		}, nil
+	}
+
 	return map[string]interface{}{
 		"state":        "live_mode",
-		"windows_logs": entries,
+		"windows_logs": string(logsJSON), // ✅ proto-safe
 	}, nil
 }
 
