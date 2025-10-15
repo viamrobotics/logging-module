@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	sensor "go.viam.com/rdk/components/sensor"
+	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 
@@ -93,7 +93,7 @@ func (s *windowsLoggingLogging) Name() resource.Name {
 // Readings queries the Windows Event Log and returns recent entries.
 func (s *windowsLoggingLogging) Readings(ctx context.Context, extra map[string]interface{}) (map[string]interface{}, error) {
 	s.logger.Infof("windows-logging: Readings called for %s with config LogType=%s, MaxEntries=%d, Logs=%s",
-		s.name.ShortString(), s.cfg.LogType, s.cfg.MaxEntries, s.cfg.Logs)
+		s.name, s.cfg.LogType, s.cfg.MaxEntries, s.cfg.Logs)
 
 	// 1. TEST MODE
 	if s.cfg.Logs == "test" || strings.HasSuffix(s.cfg.Logs, ".csv") || strings.HasSuffix(s.cfg.Logs, ".json") {
